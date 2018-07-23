@@ -114,6 +114,9 @@ def main(opt):
     # Build model saver
     model_saver = build_model_saver(model_opt, opt, model, fields, optim)
 
+    if opt.test_argument==1:
+        print('The test worked. Yay!!!!!!!!')
+
     trainer = build_trainer(
         opt, model, fields, optim, data_type, model_saver=model_saver)
 

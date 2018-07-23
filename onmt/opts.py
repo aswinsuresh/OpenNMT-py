@@ -238,6 +238,8 @@ def train_opts(parser):
     group.add_argument('-keep_checkpoint', type=int, default=-1,
                        help="""Keep X checkpoints (negative: keep all)""")
 
+    group.add_argument('-test_argument',type=int,default=0,help="""Just testing""")
+
     # GPU
     group.add_argument('-gpuid', default=[], nargs='+', type=int,
                        help="Use CUDA on the listed devices.")
