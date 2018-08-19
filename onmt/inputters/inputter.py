@@ -133,7 +133,7 @@ def make_features(batch, side, data_type='text'):
         A sequence of src/tgt tensors with optional feature tensors
         of size (len x batch).
     """
-    assert side in ['src', 'tgt']
+    assert side in ['src', 'tgt','rsrc','rtgt']
     if isinstance(batch.__dict__[side], tuple):
         data = batch.__dict__[side][0]
     else:
@@ -344,6 +344,8 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
                        min_freq=tgt_words_min_frequency)
     logger.info(" * tgt vocab size: %d." % len(fields["tgt"].vocab))
 
+
+
     # All datasets have same num of n_tgt_features,
     # getting the last one is OK.
     for j in range(dataset.n_tgt_feats):
@@ -357,6 +359,8 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
                            max_size=src_vocab_size,
                            min_freq=src_words_min_frequency)
         logger.info(" * src vocab size: %d." % len(fields["src"].vocab))
+
+
 
         # All datasets have same num of n_src_features,
         # getting the last one is OK.
@@ -375,6 +379,8 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
                 vocab_size=src_vocab_size)
             fields["src"].vocab = merged_vocab
             fields["tgt"].vocab = merged_vocab
+            fields["rtgt"].vocab = fields["tgt"].vocab
+            fields["rsrc"].vocab = fields["src"].vocab
 
     return fields
 

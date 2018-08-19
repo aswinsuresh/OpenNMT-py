@@ -14,6 +14,8 @@ from __future__ import division
 import onmt.inputters as inputters
 import onmt.utils
 
+import torch
+
 from onmt.utils.logging import logger
 
 
@@ -43,13 +45,14 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     n_gpu = len(opt.gpuid)
     gpu_rank = opt.gpu_rank
     gpu_verbose_level = opt.gpu_verbose_level
+    bidirectional = opt.bidirectional
 
     report_manager = onmt.utils.build_report_manager(opt)
     trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
                            shard_size, data_type, norm_method,
                            grad_accum_count, n_gpu, gpu_rank,
                            gpu_verbose_level, report_manager,
-                           model_saver=model_saver)
+                           model_saver=model_saver,bidirectional=bidirectional)
     return trainer
 
 
@@ -81,7 +84,7 @@ class Trainer(object):
     def __init__(self, model, train_loss, valid_loss, optim,
                  trunc_size=0, shard_size=32, data_type='text',
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
-                 gpu_verbose_level=0, report_manager=None, model_saver=None):
+                 gpu_verbose_level=0, report_manager=None, model_saver=None,bidirectional=False):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -97,6 +100,7 @@ class Trainer(object):
         self.gpu_verbose_level = gpu_verbose_level
         self.report_manager = report_manager
         self.model_saver = model_saver
+        self.bidirectional = bidirectional
 
         assert grad_accum_count > 0
         if grad_accum_count > 1:
@@ -171,9 +175,14 @@ class Trainer(object):
                                                 .all_gather_list
                                                 (normalization))
 
-                        self._gradient_accumulation(
-                            true_batchs, normalization, total_stats,
-                            report_stats)
+                        if self.bidirectional:
+                            self._gradient_accumulation_new(
+                                true_batchs, normalization, total_stats,
+                                report_stats)
+                        else:
+                            self._gradient_accumulation(
+                                true_batchs, normalization, total_stats,
+                                report_stats)
 
                         report_stats = self._maybe_report_training(
                             step, train_steps,
@@ -279,6 +288,115 @@ class Trainer(object):
                 # 2. F-prop all but generator.
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
+                outputs, attns, dec_state = \
+                    self.model(src, tgt, src_lengths, dec_state)
+
+                # 3. Compute loss in shards for memory efficiency.
+                batch_stats = self.train_loss.sharded_compute_loss(
+                    batch, outputs, attns, j,
+                    trunc_size, self.shard_size, normalization)
+                total_stats.update(batch_stats)
+                report_stats.update(batch_stats)
+
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
+        # 3.bis Multi GPU gradient gather
+        if self.n_gpu > 1:
+            grads = [p.grad.data for p in self.model.parameters()
+                     if p.requires_grad
+                     and p.grad is not None]
+            onmt.utils.distributed.all_reduce_and_rescale_tensors(
+                grads, float(1))
+
+        # 4. Update the parameters and statistics.
+        self.optim.step()
+
+    def _gradient_accumulation_new(self, true_batchs, normalization, total_stats,
+                               report_stats):
+        if self.grad_accum_count > 1:
+            self.model.zero_grad()
+
+        #print("The new function is being used")
+
+        for batch in true_batchs:
+            target_size = batch.tgt.size(0)
+            # Truncated BPTT
+            if self.trunc_size:
+                trunc_size = self.trunc_size
+            else:
+                trunc_size = target_size
+
+            dec_state = None
+            src = inputters.make_features(batch, 'src', self.data_type)
+            if self.data_type == 'text':
+                _, src_lengths = batch.src
+                report_stats.n_src_words += src_lengths.sum().item()
+            else:
+                src_lengths = None
+
+            tgt_outer = inputters.make_features(batch, 'tgt')
+
+            if self.grad_accum_count == 1:
+                self.model.zero_grad()
+
+            for j in range(0, target_size-1, trunc_size):
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
+
+                # 2. F-prop all but generator.
+                outputs, attns, dec_state = \
+                    self.model(src, tgt, src_lengths, dec_state)
+
+                # 3. Compute loss in shards for memory efficiency.
+                batch_stats = self.train_loss.sharded_compute_loss(
+                    batch, outputs, attns, j,
+                    trunc_size, self.shard_size, normalization)
+                total_stats.update(batch_stats)
+                report_stats.update(batch_stats)
+
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
+            # From Target to Source
+            import pdb
+            #pdb.set_trace()
+            target_size = batch.rsrc.size(0)
+            # Truncated BPTT
+            if self.trunc_size:
+                trunc_size = self.trunc_size
+            else:
+                trunc_size = target_size
+
+            dec_state = None
+
+            if self.data_type == 'text':
+                _, src_lengths = batch.rtgt
+                report_stats.n_src_words += src_lengths.sum().item()
+            else:
+                src_lengths = None
+
+            src_lengths, indc = torch.sort(src_lengths,descending=True)
+
+            batch.rtgt = (batch.rtgt[0][:,indc],batch.rtgt[1][indc])
+            batch.rsrc = batch.rsrc[:,indc]
+
+
+            src = inputters.make_features(batch, 'rtgt', self.data_type)
+
+
+            tgt_outer = inputters.make_features(batch, 'rsrc')
+
+            batch.src = batch.rtgt
+            batch.tgt = batch.rsrc
+
+            for j in range(0, target_size - 1, trunc_size):
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
+
+                # 2. F-prop all but generator.
                 outputs, attns, dec_state = \
                     self.model(src, tgt, src_lengths, dec_state)
 

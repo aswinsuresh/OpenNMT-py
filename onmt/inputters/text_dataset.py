@@ -70,6 +70,9 @@ class TextDataset(DatasetBase):
                       for k in keys]
         example_values = ([ex[k] for k in keys] for ex in examples_iter)
 
+        import pdb
+        #pdb.set_trace()
+
         # If out_examples is a generator, we need to save the filter_pred
         # function in serialization too, which would cause a problem when
         # `torch.save()`. Thus we materialize it as a list.
@@ -216,11 +219,19 @@ class TextDataset(DatasetBase):
             pad_token=PAD_WORD,
             include_lengths=True)
 
+        fields["rtgt"] = torchtext.data.Field(
+            pad_token=PAD_WORD,
+            include_lengths=True)
+
         for j in range(n_src_features):
             fields["src_feat_" + str(j)] = \
                 torchtext.data.Field(pad_token=PAD_WORD)
 
         fields["tgt"] = torchtext.data.Field(
+            init_token=BOS_WORD, eos_token=EOS_WORD,
+            pad_token=PAD_WORD)
+
+        fields["rsrc"] = torchtext.data.Field(
             init_token=BOS_WORD, eos_token=EOS_WORD,
             pad_token=PAD_WORD)
 
@@ -413,7 +424,7 @@ class ShardedTextCorpusIterator(object):
         if self.line_truncate:
             line = line[:self.line_truncate]
         words, feats, n_feats = TextDataset.extract_text_features(line)
-        example_dict = {self.side: words, "indices": index}
+        example_dict = {self.side: words, "r"+self.side: words, "indices": index}
         if feats:
             # All examples must have same number of features.
             aeq(self.n_feats, n_feats)

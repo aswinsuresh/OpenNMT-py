@@ -106,6 +106,9 @@ def build_save_in_shards(src_corpus, tgt_corpus, fields,
             tgt_seq_length=opt.tgt_seq_length,
             dynamic_dict=opt.dynamic_dict)
 
+        import pdb
+        #pdb.set_trace()
+
         # We save fields in vocab.pt separately, so make it empty.
         dataset.fields = []
 
